@@ -1,215 +1,157 @@
-`timescale 1ns/1ps
-
-module mp_datapath #(
-    parameter int M         = 20,   // Số hàng (số mẫu PD)
-    parameter int NE        = 200,  // Số cột (cửa sổ phơi sáng)
-    parameter int K         = 7,    // Số vòng lặp tối đa
-    parameter int THETA_W   = 32,   // Độ rộng bit Theta
-    parameter int PO_W      = 32,   // Độ rộng bit Po
-    parameter int ACC_W     = 64,   // Độ rộng bộ tích lũy
-    parameter int COEF_W    = 32    // Độ rộng hệ số đầu ra
-)(
+module mp_datapath
+    import mylib::*;
+(
     input  logic clk,
-    input  logic rst_n,
+    input  logic rst,
 
-    // --- Cổng điều khiển từ FSM (Control Inputs) ---
-    input  logic clr_all,       // Xóa bộ đếm và reset thanh ghi
-    input  logic ena_corr,      // Kích hoạt tính tương quan
-    input  logic ena_argmax,    // Kích hoạt tìm Argmax
-    input  logic ena_alpha,     // Kích hoạt tính Alpha
-    input  logic ena_coef,      // Kích hoạt cập nhật Coef
-    input  logic ena_resid,     // Kích hoạt tính phần dư r
-    input  logic iter_inc,      // Tăng biến đếm vòng lặp
+    // Tín hiệu điều khiển từ FSM
+    input  logic init_r,
+    input  logic calc_inner,
+    input  logic find_max,
+    input  logic update_coef,
+    input  logic update_r,
 
-    // --- Cờ báo trạng thái gửi về FSM (Status Outputs) ---
-    output logic corr_done,
-    output logic argmax_done,
-    output logic resid_done,
-    output logic iter_done,
+    // Tín hiệu đếm từ FSM
+    input  logic [$clog2(NE)-1:0]   col_idx,
+    input  logic [$clog2(M+1)-1:0]  row_idx,
 
-    // --- Cổng giao tiếp với BRAM chứa Theta ---
-    output logic [$clog2(M*NE)-1:0]  theta_raddr,
-    input  logic signed [THETA_W-1:0] theta_rdata,
-
-    // --- Cổng nạp dữ liệu Po từ Testbench (Setup Interface) ---
-    input  logic                    po_we,
-    input  logic [$clog2(M)-1:0]    po_waddr,
-    input  logic signed [PO_W-1:0]  po_wdata,
-
-    // --- Đầu ra kết quả ---
+    // Output
     output logic signed [COEF_W-1:0] coef [0:NE-1]
 );
 
-    // Các hằng số độ rộng bit
-    localparam int ADDR_W = $clog2(M * NE);
-    localparam int J_W    = $clog2(NE);
-    localparam int M_W    = $clog2(M);
-    localparam int K_W    = $clog2(K);
+    // ── Delay 1 cycle để bù BRAM latency ────────────────────────────
+    logic [$clog2(M+1)-1:0] row_idx_d1;
+    logic [$clog2(NE)-1:0]  col_idx_d1;
+    logic                   calc_inner_d1;  // delay 1 cycle để lọc cycle đầu tiên
+    logic                   update_r_d1;
 
-    // Mảng bộ nhớ nội bộ (Registers)
-    logic signed [PO_W-1:0]  po_mem   [0:M-1];    // Lưu tín hiệu ban đầu
-    logic signed [ACC_W-1:0] r_mem    [0:M-1];    // Vector phần dư r
-    logic signed [ACC_W-1:0] corr_mem [0:NE-1];   // Vector tương quan
-
-    // Các biến đếm (Counters)
-    logic [J_W-1:0] j_cnt;
-    logic [M_W-1:0] m_cnt;
-    logic [K_W-1:0] iter_cnt;
-
-    // Các biến lưu giá trị tính toán
-    logic signed [ACC_W-1:0] corr_acc; // Bộ cộng dồn MAC
-    logic signed [ACC_W-1:0] max_abs;  // Lưu giá trị tuyệt đối lớn nhất
-    logic [J_W-1:0]          best_j;   // Chỉ số j* tìm được
-    logic signed [ACC_W-1:0] alpha;    // Bước cập nhật hệ số
-
-    // BIẾN QUAN TRỌNG NHẤT: Pha đọc BRAM (0: Cấp địa chỉ, 1: Tính MAC)
-    logic mac_phase;
-
-    // Quá trình nạp Po từ bên ngoài vào
     always_ff @(posedge clk) begin
-        if (po_we) begin
-            po_mem[po_waddr] <= po_wdata;
-        end
+        row_idx_d1      <= row_idx;
+        col_idx_d1      <= col_idx;
+        calc_inner_d1   <= calc_inner;
+        update_r_d1     <= update_r;
     end
 
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            j_cnt      <= '0;
-            m_cnt      <= '0;
-            iter_cnt   <= '0;
-            corr_acc   <= '0;
-            max_abs    <= '0;
-            best_j     <= '0;
-            alpha      <= '0;
-            mac_phase  <= 1'b0;
-            for (int i = 0; i < NE; i++) begin
-                coef[i]     <= '0;
-                corr_mem[i] <= '0;
-            end
-            for (int i = 0; i < M; i++) r_mem[i] <= '0;
+    // ── BRAM địa chỉ ────────────────────────────────────────────────
+    logic [$clog2(NE*M)-1:0]   theta_addr;
+    logic [$clog2(M)-1:0]      po_addr;
+    logic signed [THETA_W-1:0] theta_dout;
+    logic signed [PO_W-1:0]    po_dout;
+
+    // ── BRAM instances ───────────────────────────────────────────────
+    sync_bram #(
+        .DATA_W    (PO_W),
+        .DEPTH     (M),
+        .INIT_FILE ("data/po_vector.txt")
+    ) bram_po (
+        .clk  (clk),
+        .we   (1'b0),
+        .addr (po_addr),
+        .din  ('0),
+        .dout (po_dout)
+    );
+
+    sync_bram #(
+        .DATA_W    (THETA_W),
+        .DEPTH     (NE * M),
+        .INIT_FILE ("data/theta_matrix.txt")
+    ) bram_theta (
+        .clk  (clk),
+        .we   (1'b0),
+        .addr (theta_addr),
+        .din  ('0),
+        .dout (theta_dout)
+    );
+
+    // ── Registers nội bộ ───────────────────────────────────────────
+    logic signed [ACC_W-1:0]   r            [0:M-1];   // residual
+    logic signed [ACC_W-1:0]   inner_acc;              // tích lũy 1 cột
+    logic signed [ACC_W-1:0]   inner_result [0:NE-1];  // kết quả tất cả cột
+    logic [$clog2(NE)-1:0]     best_col;               // cột tốt nhất
+    logic signed [ACC_W-1:0]   best_val;               // giá trị abs lớn nhất
+    logic signed [COEF_W-1:0]  alpha;                  // hệ số cập nhật
+
+    // Khi UPDATE_R: dùng best_col làm địa chỉ cột
+    // Các state khác: dùng col_idx bình thường
+    assign theta_addr = update_r ? (best_col * M + row_idx[$clog2(M)-1:0]) : (col_idx  * M + row_idx[$clog2(M)-1:0]);
+
+    // Dùng row_idx trực tiếp để đưa địa chỉ sớm nhất có thể
+    assign po_addr = row_idx[$clog2(M)-1:0];
+
+    // Tính abs ngay trong cycle hiện tại, không cần delay
+    logic signed [ACC_W-1:0] abs_val;
+    assign abs_val = inner_result[col_idx][ACC_W-1] ? -inner_result[col_idx] :  inner_result[col_idx];
+
+    // ── Toàn bộ logic sequential trong 1 khối ──────────────────────
+    always_ff @(posedge clk or posedge rst) begin
+        if (rst) begin
+            for (int i = 0; i < M;  i++) r[i]               <= '0;
+            for (int i = 0; i < NE; i++) coef[i]            <= '0;
+            for (int i = 0; i < NE; i++) inner_result[i]    <= '0;
+            inner_acc <= '0;
+            best_col  <= '0;
+            best_val  <= '0;
+            alpha     <= '0;
 
         end else begin
-            // ---------------------------------------------------------
-            // 1. CLR_ALL: Khởi tạo dữ liệu khi có lệnh start từ FSM
-            // ---------------------------------------------------------
-            if (clr_all) begin
-                j_cnt      <= '0;
-                m_cnt      <= '0;
-                iter_cnt   <= '0;
-                corr_acc   <= '0;
-                max_abs    <= '0;
-                best_j     <= '0;
-                mac_phase  <= 1'b0;
-                for (int i = 0; i < M; i++) begin
-                    r_mem[i] <= ACC_W'(signed'(po_mem[i])); // Nạp Po vào r
-                end
-                for (int i = 0; i < NE; i++) begin
-                    coef[i] <= '0; // Reset hệ số
-                end
+
+            // ── INIT_R ───────────────────────────────────────────────
+            // Điều kiện: init_r=1 VÀ không phải cycle đầu (row_idx != 0)
+            // Cycle đầu: row_idx=0 → po_dout còn rác, chưa ghi
+            // Từ cycle 2 trở đi: row_idx_d1 là index đúng, po_dout là data đúng
+            if (init_r && row_idx != 0)
+                r[row_idx_d1[$clog2(M)-1:0]] <= {{(ACC_W-PO_W){po_dout[PO_W-1]}}, po_dout};
+                // sign-extend PO_W → ACC_W
+
+            // ── CALC_INNER ────────────────────────────────────────────────────────
+            // Điều kiện tích lũy:
+            //   calc_inner_d1 == 1 : bỏ cycle đầu (BRAM còn data của state trước)
+            //   row_idx_d1 < M     : bỏ cycle flush giữa các cột (row_d1 == M)
+            if (calc_inner && calc_inner_d1 && row_idx_d1 < M) begin
+
+                if (row_idx_d1 == 0)
+                    // Bắt đầu cột mới: reset accumulator
+                    inner_acc <= ACC_W'(signed'(theta_dout)) * r[0];
+                else
+                    // Cộng dồn các hàng tiếp theo
+                    inner_acc <= inner_acc + ACC_W'(signed'(theta_dout)) * r[row_idx_d1[$clog2(M)-1:0]];
+
+                // Lưu kết quả khi tích lũy xong hàng cuối
+                // Phải tính tổng cuối explicit vì inner_acc chưa được cập nhật
+                // (non-blocking: inner_acc vẫn là giá trị CŨ tại đây)
+                if (row_idx_d1 == M-1)
+                    inner_result[col_idx_d1] <= inner_acc + ACC_W'(signed'(theta_dout)) * r[M-1];
             end
 
-            // ---------------------------------------------------------
-            // 2. CORR: Tính tương quan với kỹ thuật Pipelining 2 pha
-            // ---------------------------------------------------------
-            if (ena_corr) begin
-                if (mac_phase == 1'b0) begin
-                    // Pha 0: Gửi địa chỉ cho BRAM
-                    theta_raddr <= ADDR_W'(m_cnt) * ADDR_W'(NE) + ADDR_W'(j_cnt);
-                    mac_phase   <= 1'b1; // Chuyển pha
-                end else begin
-                    // Pha 1: BRAM trả dữ liệu, thực hiện nhân cộng (MAC)
-                    if (m_cnt == M_W'(M-1)) begin
-                        // Hàng cuối cùng: lưu vào mảng corr_mem, reset m, tăng j
-                        corr_mem[j_cnt] <= corr_acc + ACC_W'(theta_rdata) * r_mem[m_cnt];
-                        corr_acc <= '0;
-                        m_cnt    <= '0;
-                        j_cnt    <= j_cnt + 1'b1;
-                    end else begin
-                        // Tích lũy bình thường
-                        corr_acc <= corr_acc + ACC_W'(theta_rdata) * r_mem[m_cnt];
-                        m_cnt    <= m_cnt + 1'b1;
-                    end
-                    mac_phase <= 1'b0; // Quay lại pha 0 cho mẫu tiếp theo
+            // ── FIND_MAX ──────────────────────────────────────────────────────────
+            if (find_max) begin
+                if (col_idx == 0) begin
+                    // Khởi tạo bằng cột 0
+                    best_col <= 0;
+                    best_val <= inner_result[0][ACC_W-1] ? -inner_result[0] :  inner_result[0];
+                end else if (abs_val > best_val) begin
+                    // Cập nhật nếu tìm được giá trị lớn hơn
+                    best_val <= abs_val;
+                    best_col <= col_idx[$clog2(NE)-1:0];
                 end
             end
 
-            // ---------------------------------------------------------
-            // 3. ARGMAX: Tìm giá trị tuyệt đối lớn nhất
-            // ---------------------------------------------------------
-            if (ena_argmax) begin
-                logic signed [ACC_W-1:0] current_abs;
-                // Tính giá trị tuyệt đối
-                current_abs = (corr_mem[j_cnt][ACC_W-1]) ? -corr_mem[j_cnt] : corr_mem[j_cnt];
-                
-                if (current_abs > max_abs) begin
-                    max_abs <= current_abs;
-                    best_j  <= j_cnt;
-                end
-                
-                j_cnt <= j_cnt + 1'b1;
+            // ── UPDATE_COEF ───────────────────────────────────────────────────────
+            if (update_coef) begin
+                // Tính alpha và lưu lại để UPDATE_R dùng
+                alpha <= COEF_W'(inner_result[best_col] >>> NORM_SHIFT);
+
+                // Cập nhật coef — tính lại expression vì alpha chưa cập nhật (non-blocking)
+                coef[best_col] <= coef[best_col] + COEF_W'(inner_result[best_col] >>> NORM_SHIFT);
             end
 
-            // ---------------------------------------------------------
-            // 4. ALPHA: Tính bước cập nhật
-            // Lưu ý: Đã loại bỏ phép chia do giả định ma trận Theta 
-            // được chuẩn hóa (norm_sq ≈ 1) bằng Python từ trước.
-            // ---------------------------------------------------------
-            if (ena_alpha) begin
-                alpha <= corr_mem[best_j];
-            end
+            // ── UPDATE_R ─────────────────────────────────────────────
+            // update_r_d1: lọc cycle đầu (BRAM data cũ)
+            // row_idx_d1 < M: lọc cycle flush cuối
+            if (update_r && update_r_d1 && row_idx_d1 < M)
+                r[row_idx_d1[$clog2(M)-1:0]] <= r[row_idx_d1[$clog2(M)-1:0]] - ACC_W'(signed'(alpha)) * ACC_W'(signed'(theta_dout));
 
-            // ---------------------------------------------------------
-            // 5. COEF_UPD: Cập nhật hệ số
-            // ---------------------------------------------------------
-            if (ena_coef) begin
-                coef[best_j] <= coef[best_j] + COEF_W'(alpha);
-            end
-
-            // ---------------------------------------------------------
-            // 6. RESID: Cập nhật lại vector phần dư (Cũng dùng 2 pha như CORR)
-            // ---------------------------------------------------------
-            if (ena_resid) begin
-                if (mac_phase == 1'b0) begin
-                    // Pha 0: Gửi địa chỉ cột j*
-                    theta_raddr <= ADDR_W'(m_cnt) * ADDR_W'(NE) + ADDR_W'(best_j);
-                    mac_phase   <= 1'b1;
-                end else begin
-                    // Pha 1: Nhận dữ liệu và trừ đi
-                    r_mem[m_cnt] <= r_mem[m_cnt] - ACC_W'(theta_rdata) * alpha;
-                    m_cnt        <= m_cnt + 1'b1;
-                    mac_phase    <= 1'b0;
-                end
-            end
-
-            // ---------------------------------------------------------
-            // 7. ITER_INC: Tăng vòng lặp
-            // ---------------------------------------------------------
-            if (iter_inc) begin
-                iter_cnt  <= iter_cnt + 1'b1;
-                // Reset lại các biến chuẩn bị cho vòng lặp mới
-                j_cnt     <= '0;
-                m_cnt     <= '0;
-                corr_acc  <= '0;
-                max_abs   <= '0;
-                best_j    <= '0;
-                mac_phase <= 1'b0;
-            end
         end
-    end
-
-    // Cờ báo hiệu dựa trên trạng thái biến đếm
-    always_comb begin
-        // CORR xong khi duyệt hết dòng M-1, cột NE-1 và ở pha 1
-        corr_done   = (ena_corr && m_cnt == M_W'(M-1) && j_cnt == J_W'(NE-1) && mac_phase == 1'b1);
-        
-        // ARGMAX xong khi duyệt hết cột NE-1
-        argmax_done = (ena_argmax && j_cnt == J_W'(NE-1));
-        
-        // RESID xong khi duyệt hết dòng M-1 và ở pha 1
-        resid_done  = (ena_resid && m_cnt == M_W'(M-1) && mac_phase == 1'b1);
-        
-        // Hoàn thành khi chạm mốc K vòng lặp
-        iter_done   = (iter_cnt == K_W'(K-1));
     end
 
 endmodule

@@ -1,29 +1,28 @@
-`timescale 1ns/1ps
-
 module sync_bram #(
-    parameter int DATA_W = 32,
-    parameter int ADDR_W = 12
+    parameter int DATA_W  = 32,    // độ rộng mỗi phần tử
+    parameter int DEPTH   = 4000,  // số phần tử
+    parameter     INIT_FILE = ""   // đường dẫn file khởi tạo, mặc định rỗng
 )(
-    input  logic              clk,
-    input  logic              we,      // Write enable
-    input  logic [ADDR_W-1:0] waddr,   // Write address
-    input  logic [DATA_W-1:0] wdata,   // Write data
-    input  logic [ADDR_W-1:0] raddr,   // Read address
-    output logic [DATA_W-1:0] rdata    // Read data (đầu ra đồng bộ)
+    input  logic                      clk,
+    input  logic                      we,       // write enable
+    input  logic [$clog2(DEPTH)-1:0]  addr,     // địa chỉ đọc/ghi
+    input  logic [DATA_W-1:0]         din,      // data vào khi ghi
+    output logic [DATA_W-1:0]         dout      // data ra khi đọc
 );
 
-    // Khai báo mảng bộ nhớ RAM
-    logic [DATA_W-1:0] ram_array [0:(1<<ADDR_W)-1];
+    logic [DATA_W-1:0] mem [0:DEPTH-1];
 
-    // Quá trình ghi và đọc phải nằm chung trong 1 block đồng bộ với clock
-    always_ff @(posedge clk) begin
-        // Ghi dữ liệu
-        if (we) begin
-            ram_array[waddr] <= wdata;
+    initial begin
+        if (INIT_FILE != "") begin
+            $readmemh(INIT_FILE, mem);  // đọc file hex vào mem khi sim bắt đầu
         end
-        
-        // Đọc dữ liệu: rdata sẽ được cập nhật ở sườn lên của nhịp clock tiếp theo
-        rdata <= ram_array[raddr];
+    end
+
+    always_ff @(posedge clk) begin
+        if (we) begin
+            mem[addr] <= din;   // ghi: ưu tiên ghi khi we=1
+        end
+        dout <= mem[addr];      // đọc: luôn đọc, trễ 1 cycle
     end
 
 endmodule
