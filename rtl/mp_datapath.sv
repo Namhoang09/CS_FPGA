@@ -73,7 +73,9 @@ module mp_datapath
 
     // Khi UPDATE_R: dùng best_col làm địa chỉ cột
     // Các state khác: dùng col_idx bình thường
-    assign theta_addr = update_r ? (best_col * M + row_idx[$clog2(M)-1:0]) : (col_idx  * M + row_idx[$clog2(M)-1:0]);
+    assign theta_addr = update_r 
+            ? ($clog2(NE*M))'(best_col) * M + row_idx[$clog2(M)-1:0]
+            : ($clog2(NE*M))'(col_idx)  * M + row_idx[$clog2(M)-1:0];
 
     // Dùng row_idx trực tiếp để đưa địa chỉ sớm nhất có thể
     assign po_addr = row_idx[$clog2(M)-1:0];

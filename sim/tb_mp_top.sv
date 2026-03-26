@@ -35,7 +35,7 @@ module tb_mp_top
     always @(posedge clk)
         $display("t=%0t | state=%0d | row=%0d | col=%0d | iter=%0d | done=%0b",
             $time,
-            u_dut.u_fsm.state.name(),
+            u_dut.u_fsm.state,
             u_dut.u_fsm.row_idx,
             u_dut.u_fsm.col_idx,
             u_dut.u_fsm.iter,

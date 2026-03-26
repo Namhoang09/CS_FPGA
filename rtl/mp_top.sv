@@ -17,7 +17,7 @@ module mp_top
 
     // ── Tín hiệu counter từ FSM → Datapath ─────────────────────────
     logic [$clog2(NE)-1:0] col_idx;
-    logic [$clog2(M)-1:0]  row_idx;
+    logic [$clog2(M+1)-1:0]  row_idx;
     logic [$clog2(K)-1:0]  iter;
 
     // ── Instance FSM ────────────────────────────────────────────────
