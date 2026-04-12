@@ -33,9 +33,9 @@ module mp_datapath
     end
 
     // ── BRAM địa chỉ ────────────────────────────────────────────────
-    logic [$clog2(NE*M)-1:0]   theta_addr;
+    logic [$clog2(NE*M)-1:0]   A_addr;
     logic [$clog2(M)-1:0]      po_addr;
-    logic signed [THETA_W-1:0] theta_dout;
+    logic signed [A_W-1:0]     A_dout;
     logic signed [PO_W-1:0]    po_dout;
 
     // ── BRAM instances ───────────────────────────────────────────────
@@ -52,15 +52,15 @@ module mp_datapath
     );
 
     sync_bram #(
-        .DATA_W    (THETA_W),
+        .DATA_W    (A_W),
         .DEPTH     (NE * M),
-        .INIT_FILE ("data/theta_matrix.txt")
-    ) bram_theta (
+        .INIT_FILE ("data/A_matrix.txt")
+    ) bram_A (
         .clk  (clk),
         .we   (1'b0),
-        .addr (theta_addr),
+        .addr (A_addr),
         .din  ('0),
-        .dout (theta_dout)
+        .dout (A_dout)
     );
 
     // ── Registers nội bộ ───────────────────────────────────────────
@@ -73,7 +73,7 @@ module mp_datapath
 
     // Khi UPDATE_R: dùng best_col làm địa chỉ cột
     // Các state khác: dùng col_idx bình thường
-    assign theta_addr = update_r ? (best_col * M + row_idx[$clog2(M)-1:0]) : (col_idx  * M + row_idx[$clog2(M)-1:0]);
+    assign A_addr = update_r ? (best_col * M + row_idx[$clog2(M)-1:0]) : (col_idx  * M + row_idx[$clog2(M)-1:0]);
 
     // Dùng row_idx trực tiếp để đưa địa chỉ sớm nhất có thể
     assign po_addr = row_idx[$clog2(M)-1:0];
@@ -111,16 +111,16 @@ module mp_datapath
 
                 if (row_idx_d1 == 0)
                     // Bắt đầu cột mới: reset accumulator
-                    inner_acc <= ACC_W'(signed'(theta_dout)) * r[0];
+                    inner_acc <= ACC_W'(signed'(A_dout)) * r[0];
                 else
                     // Cộng dồn các hàng tiếp theo
-                    inner_acc <= inner_acc + ACC_W'(signed'(theta_dout)) * r[row_idx_d1[$clog2(M)-1:0]];
+                    inner_acc <= inner_acc + ACC_W'(signed'(A_dout)) * r[row_idx_d1[$clog2(M)-1:0]];
 
                 // Lưu kết quả khi tích lũy xong hàng cuối
                 // Phải tính tổng cuối explicit vì inner_acc chưa được cập nhật
                 // (non-blocking: inner_acc vẫn là giá trị CŨ tại đây)
                 if (row_idx_d1 == M-1)
-                    inner_result[col_idx_d1] <= inner_acc + ACC_W'(signed'(theta_dout)) * r[M-1];
+                    inner_result[col_idx_d1] <= inner_acc + ACC_W'(signed'(A_dout)) * r[M-1];
             end
 
             // ── FIND_MAX ──────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ module mp_datapath
             // update_r_d1: lọc cycle đầu (BRAM data cũ)
             // row_idx_d1 < M: lọc cycle flush cuối
             if (update_r && update_r_d1 && row_idx_d1 < M)
-                r[row_idx_d1[$clog2(M)-1:0]] <= r[row_idx_d1[$clog2(M)-1:0]] - ACC_W'(signed'(alpha)) * ACC_W'(signed'(theta_dout));
+                r[row_idx_d1[$clog2(M)-1:0]] <= r[row_idx_d1[$clog2(M)-1:0]] - ACC_W'(signed'(alpha)) * ACC_W'(signed'(A_dout));
 
         end
     end

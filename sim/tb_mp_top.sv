@@ -25,10 +25,10 @@ module tb_mp_top
     initial begin
         #1;
         $display("=== KIEM TRA BRAM ===");
-        $display("theta[0] = %0d", u_dut.u_datapath.bram_theta.mem[0]);
-        $display("theta[1] = %0d", u_dut.u_datapath.bram_theta.mem[1]);
-        $display("po[0]    = %0d", u_dut.u_datapath.bram_po.mem[0]);
-        $display("po[1]    = %0d", u_dut.u_datapath.bram_po.mem[1]);
+        $display("A[0]  = %0d", u_dut.u_datapath.bram_A.mem[0]);
+        $display("A[1]  = %0d", u_dut.u_datapath.bram_A.mem[1]);
+        $display("po[0] = %0d", u_dut.u_datapath.bram_po.mem[0]);
+        $display("po[1] = %0d", u_dut.u_datapath.bram_po.mem[1]);
     end
 
     // ── Theo dõi FSM state ───────────────────────────────────────────
@@ -50,13 +50,13 @@ module tb_mp_top
         repeat(5) @(posedge clk);
         rst = 0;
 
-        // chờ 2 cycle rồi kích start
+        // ch�? 2 cycle rồi kích start
         repeat(2) @(posedge clk);
         start = 1;
         @(posedge clk);
         start = 0;
 
-        // chờ done, timeout sau 100000 cycle
+        // ch�? done, timeout sau 100000 cycle
         fork
             begin
                 wait(done == 1);

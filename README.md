@@ -94,7 +94,7 @@ CS_FPGA/
 │
 │── data/
 │   ├── po_vector.txt
-│   ├── theta_matrix.txt
+│   ├── A_matrix.txt
 │   ├── norms.txt
 │   ├── d_matrix.txt
 │   └── coef_output.txt
