@@ -30,3 +30,6 @@ add wave -recursive *
 
 # Chạy đến khi $finish
 run -all
+
+# Thêm signal phù hợp
+# do wave.do
